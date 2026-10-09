@@ -49,6 +49,41 @@ class AndroidAdapter {
     }
 
     /**
+     * =========================================================================
+     * LAN Reverse Proxy (renderer-path subresources only)
+     * =========================================================================
+     * Chromium's mixed-content gate hard-blocks <img>/<video> element loads
+     * over plain http even with MIXED_CONTENT_ALWAYS_ALLOW (the shell
+     * setting only reliably affects fetch/XHR). Plain-IP Jellyfin servers
+     * are almost always http, so posters/logos/backdrops and video streams
+     * would fail for LAN users while everything else worked.
+     *
+     * The native shell exposes a reverse proxy on the app's own trusted
+     * https origin (/proxy/http/<encoded-target>) streaming bytes over a
+     * direct JVM connection, outside any web policy. Only renderer-path
+     * URLs go through it; fetch/XHR keep hitting the server directly.
+     *
+     * @param {string} url - Absolute URL or ''
+     * @returns {string} Proxied URL on the trusted origin (http targets,
+     *                   Android only), otherwise the input unchanged.
+     */
+    proxyUrl(url) {
+        if (!url || typeof url !== 'string' || !url.startsWith('http://')) {
+            return url;
+        }
+        try {
+            const bridge = typeof window !== 'undefined' ? window.AndroidBridge : null;
+            if (bridge && typeof bridge.proxyUrl === 'function') {
+                const proxied = bridge.proxyUrl(url);
+                if (proxied) return proxied;
+            }
+        } catch (e) {
+            log.warn('proxyUrl failed, using direct URL:', e && e.message);
+        }
+        return url;
+    }
+
+    /**
      * Detect if running on the Android WebView platform
      * @private
      */

@@ -83,6 +83,21 @@ public class LitefinBridge {
         return Build.VERSION.RELEASE;
     }
 
+    /**
+     * Rewrite a plain-http server URL onto this app's trusted https origin
+     * (native reverse proxy), so <img>/<video> renderer-path loads bypass
+     * Chromium's mixed-content block. Returns null for https targets and
+     * invalid input — callers fall back to the original URL.
+     */
+    @JavascriptInterface
+    public String proxyUrl(String url) {
+        try {
+            return LanProxy.buildProxiedUrl(url);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     // ========================================================================
     // Jellyfin Auto-Discovery (UDP port 7359)
     // ========================================================================

@@ -12,6 +12,8 @@
 import { eventBus } from '../core/EventBus.js';
 import { state } from '../core/StateManager.js';
 import { tizenAdapter } from '../tizen/TizenAdapter.js';
+import { androidAdapter } from '../android/AndroidAdapter.js';
+import { platformInfo } from '../utils/PlatformInfo.js';
 import { logger } from '../utils/Logger.js';
 import { storage } from '../utils/StorageService.js';
 import { i18n } from '../utils/i18n.js';
@@ -282,6 +284,32 @@ export class ApiClient {
     buildUrl(endpoint) {
         const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
         return `${this._serverUrl}${path}`;
+    }
+
+    /**
+     * =========================================================================
+     * Renderer-path URL builder (images, media streams)
+     * =========================================================================
+     * URLs consumed by <img>/<video>/<audio> elements. On Android, plain-http
+     * targets are hard-blocked by Chromium's mixed-content gate regardless of
+     * the shell's ALWAYS_ALLOW setting (verified on WebView 124: fetch/XHR
+     * pass, element loads fail with blocked=mixed-content). Those URLs are
+     * routed through the native reverse proxy on the trusted origin;
+     * fetch/XHR traffic (request()/buildUrl) stays direct — data calls work
+     * either way, and proxying them would add needless double-hop latency.
+     *
+     * On non-Android platforms (Tizen/webOS/browser) and https servers this
+     * is a pass-through, byte-identical to buildUrl.
+     *
+     * @param {string} endpoint - Endpoint path beginning with /
+     * @returns {string} Absolute URL, proxied when required
+     */
+    _rendererUrl(endpoint) {
+        const url = this.buildUrl(endpoint);
+        if (platformInfo && platformInfo.isAndroid) {
+            return androidAdapter.proxyUrl(url);
+        }
+        return url;
     }
 
     // ========================================================================
@@ -1988,7 +2016,7 @@ export class ApiClient {
         const queryString = params.toString();
         const path = `/Items/${itemId}/Images/${imageType}`;
 
-        return this.buildUrl(queryString ? `${path}?${queryString}` : path);
+        return this._rendererUrl(queryString ? `${path}?${queryString}` : path);
     }
 
     getUserImageUrl(userId, options = {}) {
@@ -2019,7 +2047,7 @@ export class ApiClient {
         const queryString = params.toString();
         const path = `/Users/${userId}/Images/Primary`;
 
-        return this.buildUrl(queryString ? `${path}?${queryString}` : path);
+        return this._rendererUrl(queryString ? `${path}?${queryString}` : path);
     }
 
     /**
@@ -2074,7 +2102,7 @@ export class ApiClient {
         const authKey = this.isEmby() ? 'api_key' : 'ApiKey';
 
         // Use the selected parameter key to authorize native browser fetch
-        return this.buildUrl(token ? `${path}&${authKey}=${token}` : path);
+        return this._rendererUrl(token ? `${path}&${authKey}=${token}` : path);
     }
 
     // ========================================================================

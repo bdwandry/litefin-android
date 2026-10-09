@@ -113,6 +113,17 @@ public class MainActivity extends Activity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                /*
+                 * LAN reverse proxy: renderer-path loads (<img>/<video>) to
+                 * plain-http Jellyfin servers are hard-blocked by Chromium's
+                 * mixed-content gate even with MIXED_CONTENT_ALWAYS_ALLOW.
+                 * The web layer rewrites such URLs to /proxy/http/<encoded
+                 * target>; we stream bytes over a direct JVM connection here,
+                 * outside any web policy. https servers are unaffected.
+                 */
+                if (LanProxy.isProxyRequest(request)) {
+                    return LanProxy.handle(request);
+                }
                 return assetLoader.shouldInterceptRequest(request.getUrl());
             }
 
@@ -232,6 +243,15 @@ public class MainActivity extends Activity {
         super.onResume();
         if (webView != null) {
             webView.onResume();
+            /*
+             * Re-assert mixed-content allowance on every resume: some OEM
+             * WebView builds reset the WebSettings pending-navigation state
+             * when the WebView is paused/resumed, which would re-enable the
+             * default mixed-content block for LAN (http) Jellyfin servers.
+             * Cheap and idempotent; documented workaround for the same issue
+             * in Cordova-based shells.
+             */
+            webView.getSettings().setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         }
         // Re-enter fullscreen after returning from the notification shade,
         // recents, or another app.
