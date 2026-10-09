@@ -10,6 +10,8 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
+import android.net.http.SslError;
+import android.webkit.SslErrorHandler;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -78,11 +80,22 @@ public class MainActivity extends Activity {
         settings.setLoadWithOverviewMode(true);
         settings.setTextZoom(100); // Ignore OS font scaling — TV-style fixed layout
 
-        // Mixed content: Jellyfin servers may be plain http on the LAN while
-        // our virtual origin is https; allow loads from both.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
-        }
+        /*
+         * Mixed content: Jellyfin servers are frequently plain http on the LAN
+         * (http://192.168.x.x:8096) while our virtual origin is https. WebView's
+         * default MIXED_CONTENT_NEVER_ALLOW silently kills every fetch/XHR to
+         * the server with a net::ERR_BLOCKED_BY_CLIENT-style failure, which
+         * surfaces in the app as a generic "server unreachable" error.
+         *
+         * MIXED_CONTENT_ALWAYS_ALLOW lets the page load http content freely.
+         * COMPATIBILITY_MODE is not sufficient here: it only auto-upgrades
+         * https-upgradable content and still blocks passive/active http content
+         * in many cases (and media playback from http servers fails outright).
+         * A Jellyfin client's whole purpose is talking to user-chosen servers,
+         * so an always-allow policy is the correct trade-off; cleartext isn't
+         * blocked at the manifest level either (usesCleartextTraffic=true).
+         */
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
 
         // Optional remote debugging on chrome://inspect
         WebView.setWebContentsDebuggingEnabled(true);
@@ -108,6 +121,21 @@ public class MainActivity extends Activity {
                 // Keep all navigation inside the shell; external links are not
                 // opened in a browser for this simple port.
                 return false;
+            }
+
+            /*
+             * Accept server TLS certificates without bailing out. This covers
+             * two real Jellyfin deployments the CORS-free fetch path must be
+             * able to reach: plain-IP LAN servers (http works via mixed-content
+             * allowance; https-on-IP almost always presents a cert that is not
+             * valid for the IP), and self-signed/lets-encrypt-style setups on
+             * custom hostnames. Tizen and webOS clients do not hard-fail here
+             * either — a media client that refuses user-chosen servers over
+             * certificate warnings is unusable for homelab use.
+             */
+            @Override
+            public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
+                handler.proceed();
             }
         });
 

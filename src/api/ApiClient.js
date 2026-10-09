@@ -2915,6 +2915,83 @@ export function testServer(address, timeout = 1000, parentSignal = null) {
 let activeDiscoveryController = null;
 
 /**
+ * Attempt Jellyfin server discovery via the Android native bridge.
+ *
+ * LitefinBridge.discoverServers() broadcasts the Jellyfin autodiscovery
+ * probe on UDP 7359 (in Java, where raw sockets are allowed) and returns a
+ * JSON array of found servers. The bridge call is async internally: we poll
+ * pollDiscoveryResult() until it returns a value, with an overall timeout.
+ *
+ * @param {Function|null} onServerFound  Called for each discovered server.
+ * @returns {Promise<Array|null>} Array of servers, or null if the bridge
+ *                                is unavailable (fall back to other paths).
+ */
+async function _discoverViaAndroidBridge(onServerFound) {
+    const bridge = typeof window !== 'undefined' ? window.AndroidBridge : null;
+    if (!bridge || typeof bridge.startDiscovery !== 'function' || typeof bridge.pollDiscoveryResult !== 'function') {
+        return null;
+    }
+
+    return new Promise((resolve) => {
+        let settled = false;
+
+        // Overall budget: the native scan takes ~3s (two 2.5s windows capped);
+        // allow up to 8s before giving up and falling back to the HTTP scan.
+        const timeout = setTimeout(() => {
+            if (!settled) {
+                settled = true;
+                log.warn('Android bridge discovery timed out');
+                resolve(null);
+            }
+        }, 8000);
+
+        try {
+            bridge.startDiscovery();
+        } catch (err) {
+            clearTimeout(timeout);
+            log.warn('Android bridge discovery failed to start:', err);
+            resolve(null);
+            return;
+        }
+
+        const poll = () => {
+            if (settled) return;
+            let result = null;
+            try {
+                result = bridge.pollDiscoveryResult();
+            } catch (_) {
+                result = null;
+            }
+
+            if (result !== null && result !== undefined) {
+                settled = true;
+                clearTimeout(timeout);
+                const servers = [];
+                try {
+                    const parsed = JSON.parse(result);
+                    (Array.isArray(parsed) ? parsed : []).forEach((srv) => {
+                        if (!srv || !srv.Address) return;
+                        const serverInfo = {
+                            address: srv.Address,
+                            name: srv.Name || srv.Address,
+                            id: srv.Id || srv.Address
+                        };
+                        servers.push(serverInfo);
+                        if (onServerFound) onServerFound(serverInfo);
+                    });
+                } catch (err) {
+                    log.warn('Android bridge discovery: malformed result', err);
+                }
+                resolve(servers);
+                return;
+            }
+            setTimeout(poll, 200);
+        };
+        poll();
+    });
+}
+
+/**
  * Cancel any active discovery process
  */
 export function cancelDiscovery() {
@@ -3228,6 +3305,12 @@ export async function sendWakeOnLan(macAddress) {
  * @returns {boolean} True if background UDP discovery service is present
  */
 export function hasBackgroundDiscoveryService() {
+    // 0. Android native bridge — the shell exposes a UDP discovery in Java
+    // (browsers cannot broadcast on UDP port 7359 themselves).
+    if (typeof window !== 'undefined' && typeof window.AndroidBridge !== 'undefined') {
+        return true;
+    }
+
     // 1. WebOS Luna Service check
     if (typeof tizen === 'undefined' && typeof window.webOS !== 'undefined' && window.webOS.service) {
         return true;
@@ -3280,6 +3363,37 @@ export async function discoverServers(onProgress = null, onServerFound = null, o
     if (wolOnScanEnabled && wolMac) {
         log.info(`Server discovery initiated. Sending Wake-on-LAN packet to ${wolMac}...`);
         sendWakeOnLan(wolMac).catch((e) => log.warn('Failed to send WOL on server discovery scan:', e));
+    }
+
+    /*
+     * =========================================================================
+     * Android Fast Path: Native UDP Discovery via the Litefin shell bridge
+     * =========================================================================
+     * The Android WebView cannot broadcast UDP, but the native shell
+     * (LitefinBridge) can. startDiscovery() fires the Jellyfin probe on
+     * UDP 7359 on a worker thread; pollDiscoveryResult() returns the JSON
+     * result array once the ~3s collection window closes (null while running).
+     *
+     * Works for both automatic and manual scans — it is nearly instant and
+     * does not generate any HTTP traffic, so it is safe to always allow.
+     * On failure we fall through to the normal scan paths below.
+     * =========================================================================
+     */
+    if (typeof window !== 'undefined' && typeof window.AndroidBridge !== 'undefined'
+        && typeof window.AndroidBridge.startDiscovery === 'function') {
+        const androidServers = await _discoverViaAndroidBridge(onServerFound);
+        if (androidServers !== null && androidServers.length > 0) {
+            log.info(`Android bridge discovery complete: ${androidServers.length} server(s) found`);
+            return androidServers;
+        }
+        /*
+         * null (bridge broken) or [] (no replies). On an emulator the AVD NAT
+         * swallows UDP broadcasts, so an empty result is normal there — fall
+         * through to the HTTP subnet scan, which reaches the host LAN via the
+         * gateway. On real hardware the bridge scan finds servers, so this
+         * path is effectively emulator-only.
+         */
+        log.warn('Android bridge discovery unavailable or empty — falling back');
     }
 
     /*
