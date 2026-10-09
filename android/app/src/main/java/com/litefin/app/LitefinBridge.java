@@ -92,6 +92,19 @@ public class LitefinBridge {
     @JavascriptInterface
     public String proxyUrl(String url) {
         try {
+            /*
+             * MEDIA goes through the loopback HTTP server (LanServer), not the
+             * shouldInterceptRequest proxy: Chromium's WebView intercept path
+             * reliably fails every second ranged request to the same URL
+             * (net::ERR_FAILED, 'Content-Length: 0, <n>' header merge), which
+             * breaks MP4 moov-at-end playback ('Format error', 'data source
+             * error'). The loopback server streams 206 natively; loopback http
+             * is a secure context so mixed content never applies.
+             * Images/API fetches keep the intercept path — those are single-
+             * shot loads and work perfectly there.
+             */
+            String media = LanServer.buildLoopbackUrl(url);
+            if (media != null) return media;
             return LanProxy.buildProxiedUrl(url);
         } catch (Exception e) {
             return null;

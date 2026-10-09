@@ -75,7 +75,11 @@ public class MainActivity extends Activity {
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        // was LOAD_DEFAULT: network capture showed 'Content-Length: 0, <n>' merged onto
+        // shouldInterceptRequest responses and net::ERR_FAILED on the second Range load of
+        // the same URL, which broke video seeking and end-of-moov MP4 playback entirely.
+
         settings.setUseWideViewPort(true);
         settings.setLoadWithOverviewMode(true);
         settings.setTextZoom(100); // Ignore OS font scaling — TV-style fixed layout
@@ -105,6 +109,11 @@ public class MainActivity extends Activity {
 
         // Bridge — becomes window.AndroidBridge in JS
         webView.addJavascriptInterface(new LitefinBridge(this), "AndroidBridge");
+
+        // Loopback media proxy (see LanServer): real HTTP server on 127.0.0.1
+        // for <video> streams because shouldInterceptRequest cannot serve
+        // repeated ranged (206) responses for the same URL reliably.
+        LanServer.start();
 
         WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))

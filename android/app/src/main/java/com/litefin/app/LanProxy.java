@@ -74,10 +74,13 @@ public final class LanProxy {
      * Content-Type, and passes through status + Range headers so seeking
      * works for video.
      */
+    public static int ACTIVE = 0;
+
     public static WebResourceResponse handle(WebResourceRequest request) {
         String path = request.getUrl().getPath();
         String rest = path != null ? path.substring(PROXY_PREFIX.length()) : "";
         if (!rest.startsWith("http/")) return notFound();
+        ACTIVE++;            android.util.Log.d("LanProxy", "handle enter, active=" + ACTIVE + " for " + request.getUrl().getLastPathSegment());
 
         // rest = "http/<url-encoded target>"
         String targetFragment = rest.substring("http/".length());
@@ -108,6 +111,7 @@ public final class LanProxy {
             }
 
             int code = conn.getResponseCode();
+            android.util.Log.d("LanProxy", "  upstream code=" + code + " ct=" + conn.getContentType() + " contentRange=" + conn.getHeaderField("Content-Range") + " for " + target);
             String contentType = conn.getContentType();
             if (contentType == null) contentType = "application/octet-stream";
             InputStream body = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
@@ -127,20 +131,37 @@ public final class LanProxy {
              * in its finalizer.
              */
 
+            /*
+             * Header pass-through notes:
+             * - Content-Range / Accept-Ranges are echoed explicitly.
+             * - 'Cache-Control: no-store' prevents Chromium from reusing the
+             *   first 206 body for later seek requests against the same URL.
+             * - Content-Length IS set explicitly (from upstream). Omitting it
+             *   made Chromium bookkeep an implicit 'Content-Length: 0' that
+             *   contradicted Content-Range on 206 responses; the media/fetch
+             *   stack then rejected do second response for the same resource
+             *   with net::ERR_FAILED ('Failed to fetch') and playback died
+             *   with 'Format error' / 'data source error'.
+             */
             Map<String, String> respHeaders = new HashMap<>();
             String range = conn.getHeaderField("Content-Range");
             if (range != null) respHeaders.put("Content-Range", range);
             String accept = conn.getHeaderField("Accept-Ranges");
             if (accept != null) respHeaders.put("Accept-Ranges", accept);
-            String len = conn.getHeaderField("Content-Length");
-            if (len != null) respHeaders.put("Content-Length", len);
+            respHeaders.put("Cache-Control", "no-store");
+            String upstreamLen = conn.getHeaderField("Content-Length");
+            if (upstreamLen != null) respHeaders.put("Content-Length", upstreamLen);
 
-            return new WebResourceResponse(contentType, null, code, reason(code), respHeaders, body);
+            WebResourceResponse resp = new WebResourceResponse(contentType, null, code, reason(code), respHeaders, body);
+            android.util.Log.d("LanProxy", "handle exit, active=" + ACTIVE);
+            return resp;
         } catch (Exception e) {
             android.util.Log.e("LanProxy", "proxy failed for " + target + ": " + e);
             if (conn != null) {
                 try { conn.disconnect(); } catch (Exception ignored) { }
             }
+            ACTIVE--;
+            android.util.Log.d("LanProxy", "handle exception exit, active=" + ACTIVE);
             return notFound();
         }
     }

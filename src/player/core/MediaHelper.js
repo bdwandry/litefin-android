@@ -15,6 +15,7 @@ import { storage } from '../../utils/StorageService.js';
 import { platformInfo } from '../../utils/PlatformInfo.js';
 import { state } from '../../core/StateManager.js';
 import { logger } from '../../utils/Logger.js';
+import { androidAdapter } from '../../android/AndroidAdapter.js';
 
 const log = logger.create('MediaHelper');
 
@@ -221,6 +222,22 @@ export const MediaHelper = {
         // where ffmpeg cuts the beginning (-ss) without copying original timestamps.
         // =====================================================================
         const isProgressiveTranscode = (playMethod === 'Transcode' || playMethod === 'DirectStream') && !isHls;
+
+        /*
+         * Android LAN reverse proxy: the URL built above is handed to a
+         * <video> element (renderer path). Chromium's mixed-content gate
+         * hard-blocks element loads over plain http even with
+         * MIXED_CONTENT_ALWAYS_ALLOW, so LAN-IP servers would throw
+         * MEDIA_ELEMENT_ERROR the moment playback starts. Route the final
+         * URL through the native reverse proxy on the app's trusted origin;
+         * https servers and non-Android runtimes pass through unchanged
+         * (see AndroidAdapter.proxyUrl). External/remote sources are
+         * already absolute http(s) URLs — the proxy only rewrites
+         * http-server-hosted paths, and buildProxiedUrl rejects https.
+         */
+        if (platformInfo && platformInfo.isAndroid && url) {
+            url = androidAdapter.proxyUrl(url);
+        }
 
         return {
             url,
